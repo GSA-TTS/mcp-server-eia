@@ -48,15 +48,22 @@ register_tools(mcp)
 register_routes(mcp)
 
 if __name__ == "__main__":
-    # When run directly, check for a platform port env var.
-    # If found, start an HTTP server (useful for Databricks local testing).
-    # Otherwise fall back to stdio for local MCP clients (Claude Desktop, etc.).
+    # Transport selection:
+    # - If a platform port env var is set (PORT / DATABRICKS_APP_PORT), serve MCP
+    #   over streamable HTTP on that port at the fixed path /mcp, with a /health
+    #   readiness endpoint. This is the mode the container image uses so the Obot
+    #   MCP gateway can host it as a `containerized` server (`:8080/mcp`, health
+    #   at `/health`) — the Dockerfile sets PORT=8080.
+    # - Otherwise fall back to stdio for local MCP clients (Claude Desktop, etc.).
+    #
+    # Note on authentication: the server intentionally sets no FastMCP `auth`
+    # provider. In the gateway-hosted `containerized` model the container has no
+    # public route — the Obot gateway is the only caller and it enforces access
+    # (transport auth). The per-user EIA credential is a *separate* concern read
+    # from the EIA_API_KEY environment variable at call time (see utils.py).
     port_env = os.getenv("DATABRICKS_APP_PORT") or os.getenv("PORT")
     if port_env:
-        mcp.run(transport="http", host="0.0.0.0", port=int(port_env))
+        mcp.run(transport="http", host="0.0.0.0", port=int(port_env), path="/mcp")
     else:
         mcp.run(transport="stdio")
-
-
-
 
