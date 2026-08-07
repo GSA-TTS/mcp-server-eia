@@ -1,68 +1,60 @@
-#!/usr/bin/env sh
-# Build and push the EIA MCP server image to a public registry so the Obot MCP
-# gateway can pull it (the Docker runtime backend pulls WITHOUT auth, so the
-# image MUST be public).
+#!/bin/bash
+# Build the EIA MCP server container image and push it to GHCR.
 #
-# The image is built MULTI-ARCH (linux/amd64 + linux/arm64). This is required:
-# the gateway host is linux/amd64, so an arm64-only image (what a plain
-# `docker build` produces on Apple Silicon) makes the gateway fail with
-# "No such image ..." — it means "no manifest for my architecture".
+# The image is consumed by the Obot MCP gateway as a hosted "containerized"
+# MCP server (see the mcp-server-hub-catalog entry). It serves MCP over
+# streamable HTTP at :8080/mcp with a health check at :8080/health.
+#
+# Prerequisites:
+#   - docker with buildx (for --platform)
+#   - Authenticated to GHCR:
+#       echo "$GHCR_TOKEN" | docker login ghcr.io -u <github-username> --password-stdin
+#     (token needs write:packages scope)
 #
 # Usage:
-#   ./build-and-push.sh [VERSION]
+#   bash scripts/build-and-push.sh
 #
-# VERSION defaults to the version in pyproject.toml. Requires that you are
-# already logged in to GHCR (docker login ghcr.io) with push rights to
-# GSA-TTS, and that the package visibility is set to PUBLIC after the first push.
+# The gateway EC2 host is x86_64, so we build linux/amd64 (even from an arm64
+# Apple Silicon workstation — buildx handles the emulation). An arm64-only image
+# makes the gateway fail with a misleading "No such image ..." error.
 #
-# Cross-arch builds need emulation for the non-native platform. On Docker
-# Desktop this is built in; otherwise run once:
-#   docker run --privileged --rm tonistiigi/binfmt --install all
-#
-# This script does NOT handle credentials and does NOT bake any secret into the
-# image (the per-user EIA_API_KEY is injected at runtime by the gateway).
-set -eu
+# This script does NOT bake any secret into the image; the per-user EIA_API_KEY
+# is injected at runtime by the gateway.
+set -euo pipefail
 
-# Run from the repo root regardless of where the script is invoked from, so the
-# build context (.) and pyproject.toml resolve correctly.
-cd "$(dirname "$0")/.."
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
 
-IMAGE="ghcr.io/gsa-tts/mcp-server-eia"
-PLATFORMS="linux/amd64,linux/arm64"
+REGISTRY="ghcr.io"
+IMAGE="${REGISTRY}/gsa-tts/mcp-server-eia"
 
-# Resolve version from arg or pyproject.toml.
-VERSION="${1:-}"
-if [ -z "$VERSION" ]; then
-  VERSION="$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')"
-fi
-if [ -z "$VERSION" ]; then
-  echo "ERROR: could not determine version; pass it explicitly." >&2
+# Version tag sourced from pyproject.toml (single source of truth).
+VERSION="$(grep -m1 '^version' pyproject.toml | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')"
+if [[ -z "$VERSION" ]]; then
+  echo "FATAL: could not read version from pyproject.toml" >&2
   exit 1
 fi
 
-# buildx needs a container-driver builder to emit a multi-arch manifest and push
-# it in one step. Create a dedicated one if it does not already exist.
-BUILDER="eia-multiarch"
-if ! docker buildx inspect "$BUILDER" >/dev/null 2>&1; then
-  echo "Creating buildx builder '$BUILDER' (docker-container driver)"
-  docker buildx create --name "$BUILDER" --driver docker-container --bootstrap >/dev/null
-fi
-
-echo "Building + pushing ${IMAGE}:${VERSION} (and :latest) for ${PLATFORMS}"
+echo "=== Building + pushing ${IMAGE}:${VERSION} and :latest (linux/amd64) ==="
+# Single-shot cross-arch build+push. The gateway EC2 host is x86_64, so we
+# always target linux/amd64 even when building from an arm64 (Apple Silicon)
+# workstation. buildx handles the emulation and pushes both tags.
 docker buildx build \
-  --builder "$BUILDER" \
-  --platform "$PLATFORMS" \
+  --platform linux/amd64 \
   -t "${IMAGE}:${VERSION}" \
   -t "${IMAGE}:latest" \
   --push \
   .
 
-cat <<EOF
-
-Done. Next steps (human):
-  1. Ensure the GHCR package visibility is PUBLIC:
-     https://github.com/orgs/GSA-TTS/packages/container/mcp-server-eia/settings
-  2. Verify it is publicly pullable AND multi-arch (expect amd64 + arm64):
-     docker manifest inspect ${IMAGE}:${VERSION} | grep architecture
-  3. The catalog entry pins ${IMAGE}:${VERSION}.
-EOF
+echo ""
+echo "Pushed:"
+echo "  ${IMAGE}:${VERSION}"
+echo "  ${IMAGE}:latest"
+echo ""
+echo "NOTE: On first push, set the GHCR package visibility to PUBLIC so the"
+echo "Obot docker runtime backend (which has no image-pull auth) can pull it:"
+echo "  GitHub -> Org packages -> mcp-server-eia -> Package settings"
+echo "  -> Change visibility -> Public"
+echo ""
+echo "Verify the published architecture is amd64:"
+echo "  docker manifest inspect ${IMAGE}:${VERSION} | grep architecture"

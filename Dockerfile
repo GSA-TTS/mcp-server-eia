@@ -1,8 +1,11 @@
-# syntax=docker/dockerfile:1
-
 # Container image for the EIA MCP server, hosted by the Obot MCP gateway as a
 # `containerized` server. It serves MCP over streamable HTTP at :8080/mcp with a
 # /health readiness endpoint (see src/eia_mcp/app.py + routes.py).
+#
+# Mirrors the pattern used by the other GSA MCP servers (e.g. mcp-server-nci-evs):
+# a plain pip install from a uv-exported requirements.txt, PYTHONPATH=/app/src,
+# and PORT=8080 selecting the HTTP transport. No BuildKit-only features, so it
+# builds cleanly under `docker buildx --platform linux/amd64`.
 #
 # SECURITY: no credentials are baked into the image. The per-user EIA_API_KEY is
 # injected as an environment variable at runtime by the gateway (singleUser
@@ -10,32 +13,21 @@
 
 FROM python:3.14-slim
 
-# uv for fast, lockfile-faithful dependency installation.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    # Serve over HTTP on 8080 (matches the catalog containerizedConfig).
-    PORT=8080 \
-    # Install into a project-local venv and put it on PATH.
-    UV_PROJECT_ENVIRONMENT=/app/.venv \
-    PATH="/app/.venv/bin:$PATH"
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app/src
+ENV PORT=8080
 
 WORKDIR /app
 
-# Install dependencies first (cached) using only the lock + manifest, so code
-# changes don't bust the dependency layer. --frozen fails if uv.lock is stale.
-COPY pyproject.toml uv.lock ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev
-
-# Now copy the source and install the project itself.
-COPY README.md ./
+COPY requirements.txt .
+COPY pyproject.toml .
+COPY README.md .
 COPY src ./src
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 8080
 
-# PORT=8080 selects HTTP transport at /mcp (see app.py transport selection).
-CMD ["python", "-m", "eia_mcp.app"]
+# PORT=8080 selects the HTTP transport at /mcp (see app.py transport selection).
+CMD ["sh", "-c", "PORT=8080 python -m eia_mcp.app"]

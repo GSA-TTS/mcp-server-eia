@@ -88,12 +88,17 @@ curl -s localhost:8080/health   # {"status":"healthy","service":"mcp-server-eia"
 Publish a public, version-pinned image for the gateway to pull:
 
 ```sh
-./scripts/build-and-push.sh          # tags ghcr.io/gsa-tts/mcp-server-eia:<version>
+bash scripts/build-and-push.sh       # tags ghcr.io/gsa-tts/mcp-server-eia:<version>
 ```
 
 > The gateway's Docker runtime pulls **without** registry auth, so the image
 > must be **publicly pullable**. Set the GHCR package visibility to public after
-> the first push.
+> the first push. The script builds **`linux/amd64`** (the gateway host arch) —
+> an arm64-only image makes the gateway fail with a misleading "No such image".
+>
+> `requirements.txt` is a pinned export of the resolved dependencies used by the
+> image build (`uv export --format requirements-txt --no-hashes --no-dev -o
+> requirements.txt`). Regenerate it whenever dependencies change.
 
 ### Authentication model
 
@@ -145,6 +150,7 @@ src/eia_mcp/
     ├── get_facet_options.py  # eia_get_facet_options
     └── get_data.py           # eia_get_data
 Dockerfile                    # containerized deployment (:8080/mcp, /health)
+requirements.txt              # pinned deps (uv export) used by the image build
 scripts/build-and-push.sh     # build + push public GHCR image for the gateway
 docs/eia-api-swagger/         # EIA API v2 OpenAPI/Swagger reference
 ```
