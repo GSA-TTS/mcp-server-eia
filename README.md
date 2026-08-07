@@ -69,9 +69,52 @@ uv run python -m eia_mcp.app
 
 - With no port env var set, the server runs over **stdio** (for Claude Desktop,
   Claude Code, and other local MCP clients).
-- If `PORT` or `DATABRICKS_APP_PORT` is set, it runs over **HTTP** on that port
-  (for remote/hosted deployment). A `GET /health` endpoint is exposed in HTTP
-  mode.
+- If `PORT` or `DATABRICKS_APP_PORT` is set, it runs over **streamable HTTP** on
+  that port, serving MCP at the fixed path **`/mcp`** and a **`GET /health`**
+  readiness endpoint. This is the mode the container image uses.
+
+### Container / gateway-hosted deployment
+
+The included `Dockerfile` builds an image that serves MCP over streamable HTTP
+at **`:8080/mcp`** (health at `/health`) — the contract the GSA Obot MCP gateway
+expects for a `containerized` server.
+
+```sh
+docker build -t mcp-server-eia .
+docker run --rm -p 8080:8080 -e EIA_API_KEY=your_key_here mcp-server-eia
+curl -s localhost:8080/health   # {"status":"healthy","service":"mcp-server-eia"}
+```
+
+Publish a public, version-pinned image for the gateway to pull:
+
+```sh
+./scripts/build-and-push.sh          # tags ghcr.io/gsa-tts/mcp-server-eia:<version>
+```
+
+> The gateway's Docker runtime pulls **without** registry auth, so the image
+> must be **publicly pullable**. Set the GHCR package visibility to public after
+> the first push.
+
+### Authentication model
+
+This server deals with **two distinct credentials on two different hops** — do
+not conflate them:
+
+| Credential | Hop | Who supplies / enforces it |
+|------------|-----|----------------------------|
+| Gateway/transport auth (e.g. Obot API key) | client → gateway → this server | The **Obot gateway**. In the `containerized` deployment the container has **no public route**, so the gateway is the only caller and it enforces access. |
+| `EIA_API_KEY` | this server → `api.eia.gov` | Read from the **environment** at call time (`utils.get_api_key`). In a `singleUser` gateway deployment, each user gets their own container instance with **their own** key injected as an env var. |
+
+Because the gateway owns transport auth and each user's key is isolated per
+instance, the server intentionally sets **no FastMCP `auth` provider** — it
+assumes zero transport-authentication responsibility.
+
+> **If this server is ever deployed as a `remote` server** (a public URL
+> reachable independently of the gateway), the MCP endpoint would be
+> unauthenticated. In that case add a FastMCP server-side `JWTVerifier`
+> validating the gateway/SSO issuer (contingent on that issuer exposing a JWKS
+> endpoint) — **not** `OAuthProxy`/`OAuthProvider`. Keeping the server
+> `containerized` (gateway-guarded) avoids this.
 
 ### Example MCP client config (stdio)
 
@@ -101,6 +144,8 @@ src/eia_mcp/
     ├── list_facets.py        # eia_list_facets
     ├── get_facet_options.py  # eia_get_facet_options
     └── get_data.py           # eia_get_data
+Dockerfile                    # containerized deployment (:8080/mcp, /health)
+scripts/build-and-push.sh     # build + push public GHCR image for the gateway
 docs/eia-api-swagger/         # EIA API v2 OpenAPI/Swagger reference
 ```
 

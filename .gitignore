@@ -17,5 +17,4 @@ secrets/
 .env
 
 # ignore scripts 
-scripts/
 .databricks
